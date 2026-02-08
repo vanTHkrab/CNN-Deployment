@@ -162,3 +162,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Uploaded images
+src/uploads/
+
+# Keras model files (use TFLite instead)
+*.keras
+
