@@ -108,39 +108,42 @@ def preprocess_image(image: Image.Image) -> np.ndarray:
 # Prediction
 # ──────────────────────────────────────────────
 def predict(model_id: str, image: np.ndarray) -> dict:
-    """
-    Run inference and return a result dict.
-
-    Supports both Keras and TFLite models automatically.
-
-    Returns
-    -------
-    dict with keys:
-        predicted_class : str
-        confidence      : float
-        probabilities   : list[dict]   (class_name, confidence)
-    """
     model = get_model(model_id)
     model_type = get_model_type(model_id)
-    
+
     if model_type == "keras":
-        # Keras model prediction
         preds: np.ndarray = model.predict(image, verbose=0)
-        probs = preds[0].tolist()
+        probs = preds[0]
+
     elif model_type == "tflite":
-        # TFLite model prediction
         input_details = model.get_input_details()
         output_details = model.get_output_details()
-        
-        # Set input tensor
-        model.set_tensor(input_details[0]['index'], image.astype(np.float32))
-        
-        # Run inference
+
+        # ---------- INPUT ----------
+        input_info = input_details[0]
+
+        if input_info["dtype"] == np.uint8:
+            scale, zero_point = input_info["quantization"]
+            image = image / scale + zero_point
+            image = image.astype(np.uint8)
+        else:
+            image = image.astype(np.float32)
+
+        model.set_tensor(input_info["index"], image)
         model.invoke()
-        
-        # Get output tensor
-        output_data = model.get_tensor(output_details[0]['index'])
-        probs = output_data[0].tolist()
+
+        # ---------- OUTPUT ----------
+        output_info = output_details[0]
+        output_data = model.get_tensor(output_info["index"])[0]
+
+        if output_info["dtype"] == np.uint8:
+            scale, zero_point = output_info["quantization"]
+            output_data = (output_data.astype(np.float32) - zero_point) * scale
+
+        # softmax
+        exp = np.exp(output_data - np.max(output_data))
+        probs = exp / exp.sum()
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -148,9 +151,10 @@ def predict(model_id: str, image: np.ndarray) -> dict:
 
     return {
         "predicted_class": CLASS_NAMES[predicted_idx],
-        "confidence": round(probs[predicted_idx], 4),
+        "confidence": round(float(probs[predicted_idx]), 4),
         "probabilities": [
-            {"class_name": name, "confidence": round(prob, 4)}
+            {"class_name": name, "confidence": round(float(prob), 4)}
             for name, prob in zip(CLASS_NAMES, probs)
         ],
     }
+
