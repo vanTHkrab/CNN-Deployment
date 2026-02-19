@@ -4,6 +4,8 @@ tensorflow
 Pillow
 httpx
 numpy
+matplotlib
+pydot
 python-multipart
 pydantic-settings
 pytest

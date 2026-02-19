@@ -21,3 +21,4 @@ class PredictionResponse(BaseModel):
     predicted_class: str
     confidence: float
     probabilities: list[PredictionResult]
+    gradcam_url: str | None = None

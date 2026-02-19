@@ -165,6 +165,12 @@ cython_debug/
 # Uploaded images
 src/uploads/
 
+# Grad-CAM heatmaps
+src/grad-cam/
+
 # Keras model files (use TFLite instead)
 *.keras
+
+# Generated model reports & plots
+src/models/reports/
 

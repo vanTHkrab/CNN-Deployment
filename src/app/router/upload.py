@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from src.app.config import UPLOAD_DIR, settings
 from src.app.schemas.upload import UploadResponse
+from src.app.services.storage_service import enforce_storage_limit
 
 router = APIRouter(tags=["Upload"])
 
@@ -56,6 +57,9 @@ async def upload_image(request: Request, file: UploadFile = File(...)) -> Upload
 
     with open(file_path, "wb") as f:
         f.write(content)
+
+    # ── enforce storage limit ──
+    enforce_storage_limit(UPLOAD_DIR)
 
     # ── construct public URL ──
     # Use request.url to get the base URL (scheme + host + port)

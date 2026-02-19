@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     max_upload_size: int = 10 * 1024 * 1024  # 10 MB
     allowed_extensions: str = ".jpg,.jpeg,.png,.webp"
 
+    # Storage management
+    max_storage_files: int = 10  # max images per folder (uploads, grad-cam)
+
     # Application settings
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
@@ -66,9 +69,11 @@ settings = Settings()
 BASE_DIR = Path(__file__).resolve().parent.parent          # src/
 MODELS_DIR = BASE_DIR / "models"
 UPLOAD_DIR = BASE_DIR / "uploads"
+GRADCAM_DIR = BASE_DIR / "grad-cam"
 
-# Create upload directory if it doesn't exist
+# Create directories if they don't exist
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+GRADCAM_DIR.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────
 # Class labels (alphabetical order – must match training)

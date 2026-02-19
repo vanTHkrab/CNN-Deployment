@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
-from src.app.config import UPLOAD_DIR, settings
+from src.app.config import GRADCAM_DIR, UPLOAD_DIR, settings
 from src.app.router import health, models, predict, upload
 from src.app.services.model_service import clear_models, load_all_models
 
@@ -63,3 +63,6 @@ app.include_router(predict.router)
 
 # ── serve uploaded images statically ──
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# ── serve Grad-CAM heatmaps statically ──
+app.mount("/grad-cam", StaticFiles(directory=str(GRADCAM_DIR)), name="grad-cam")

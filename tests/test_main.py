@@ -63,13 +63,23 @@ def test_predict_invalid_image_url() -> None:
 
 @patch("src.app.router.predict.fetch_image")
 @patch("src.app.router.predict.predict")
-def test_predict_success(mock_predict: MagicMock, mock_fetch: MagicMock) -> None:
+@patch("src.app.router.predict.generate_gradcam", return_value=None)
+@patch("src.app.router.predict.get_model")
+def test_predict_success(
+    mock_get_model: MagicMock,
+    mock_gradcam: MagicMock,
+    mock_predict: MagicMock,
+    mock_fetch: MagicMock,
+) -> None:
     """End-to-end with mocked model + image download."""
     from PIL import Image
 
     # mock fetch_image → return a dummy PIL image
     dummy_img = Image.new("RGB", (224, 224))
     mock_fetch.return_value = dummy_img
+
+    # mock get_model → return a dummy object
+    mock_get_model.return_value = MagicMock()
 
     # mock predict → return a fake result
     mock_predict.return_value = {
@@ -93,6 +103,8 @@ def test_predict_success(mock_predict: MagicMock, mock_fetch: MagicMock) -> None
     assert data["predicted_class"] == CLASS_NAMES[0]
     assert "probabilities" in data
     assert len(data["probabilities"]) == len(CLASS_NAMES)
+    # gradcam_url is None when generate_gradcam returns None
+    assert data["gradcam_url"] is None
 
 
 # ──────────────────────────────────────────────
