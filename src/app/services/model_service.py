@@ -58,9 +58,16 @@ def load_keras_model(model_id: str, path: Path) -> tf.keras.Model:
 
 
 def load_tflite_model(model_id: str, path: Path) -> tf.lite.Interpreter:
-    """Load a TFLite model and store it in the cache."""
+    """Load a TFLite model and store it in the cache.
+
+    ``experimental_preserve_all_tensors=True`` is required so that the
+    CAM service can read intermediate feature-map tensors after inference.
+    """
     logger.info("Loading TFLite model %s from %s …", model_id, path)
-    interpreter = tf.lite.Interpreter(model_path=str(path))
+    interpreter = tf.lite.Interpreter(
+        model_path=str(path),
+        experimental_preserve_all_tensors=True,
+    )
     interpreter.allocate_tensors()
     _model_cache[model_id] = interpreter
     _model_types[model_id] = "tflite"
