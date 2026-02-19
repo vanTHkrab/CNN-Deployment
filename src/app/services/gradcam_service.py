@@ -1,13 +1,8 @@
 """Service layer – Grad-CAM / CAM heatmap generation.
 
-*  **Keras models** → true Grad-CAM (gradient-weighted class activation
-   mapping) using ``tf.GradientTape``.
-*  **TFLite models** → CAM (class activation mapping) by reading the
-   last conv feature map and the Dense layer weights directly from the
-   interpreter – **no ``.keras`` fallback required**.
-
-   For ``GlobalAveragePooling → Dense`` architectures the CAM result is
-   mathematically equivalent to Grad-CAM.
+*  **Keras models** (dev) → true Grad-CAM via ``tf.GradientTape``.
+*  **TFLite models** (prod) → CAM using Dense weights × conv feature
+   maps — no full TensorFlow required, works with ``tflite-runtime``.
 
 Both paths produce a heatmap overlay saved as a PNG in ``GRADCAM_DIR``.
 """
@@ -17,12 +12,23 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 import numpy as np
-import tensorflow as tf
 from PIL import Image
 
-from src.app.config import CLASS_NAMES, GRADCAM_DIR
+from src.app.compat import Interpreter
+from src.app.config import CLASS_NAMES, GRADCAM_DIR, MODEL_REGISTRY
+
+logger = logging.getLogger(__name__)
+
+# ── Optional: full TensorFlow (only in dev) ──
+try:
+    import tensorflow as tf  # type: ignore[import-untyped]
+
+    _HAS_TF = True
+except ImportError:
+    _HAS_TF = False
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +187,7 @@ def _compute_heatmap_keras(
 # ══════════════════════════════════════════════
 
 def _find_last_conv_tensor_tflite(
-    interpreter: tf.lite.Interpreter,
+    interpreter: Interpreter,
 ) -> dict | None:
     """
     Find the last spatial feature-map tensor ``(1, H, W, C)`` in the
@@ -197,7 +203,7 @@ def _find_last_conv_tensor_tflite(
 
 
 def _find_dense_weights_tflite(
-    interpreter: tf.lite.Interpreter,
+    interpreter: Interpreter,
     num_classes: int,
 ) -> np.ndarray | None:
     """
@@ -245,13 +251,17 @@ def _find_dense_weights_tflite(
 
 
 def _compute_heatmap_tflite(
-    interpreter: tf.lite.Interpreter,
+    tflite_path: str,
     img_array: np.ndarray,
     predicted_idx: int,
     num_classes: int,
 ) -> np.ndarray | None:
     """
-    CAM for TFLite models.
+    CAM for TFLite models — **memory-efficient**.
+
+    A short-lived interpreter with ``experimental_preserve_all_tensors``
+    is created, used for a single forward pass, and then discarded so
+    that the ~hundreds-of-MB intermediate buffer is freed immediately.
 
     For ``GlobalAveragePooling → Dense`` architectures::
 
@@ -261,37 +271,49 @@ def _compute_heatmap_tflite(
 
     Returns a 2-D array (H, W) with values in [0, 1], or ``None``.
     """
-    # ── Run inference to populate intermediate tensors ──
-    input_details = interpreter.get_input_details()
-    input_info = input_details[0]
-    image = img_array.copy()
-
-    if input_info["dtype"] == np.uint8:
-        scale, zero_point = input_info["quantization"]
-        image = (image / scale + zero_point).astype(np.uint8)
-    else:
-        image = image.astype(np.float32)
-
-    interpreter.set_tensor(input_info["index"], image)
-    interpreter.invoke()
-
-    # ── Get the last conv feature map ──
-    conv_info = _find_last_conv_tensor_tflite(interpreter)
-    if conv_info is None:
-        logger.warning("No spatial feature-map tensor found in TFLite model.")
-        return None
-
-    conv_output = interpreter.get_tensor(conv_info["index"])[0]  # (H, W, C)
-    logger.info(
-        "TFLite CAM: tensor '%s' shape=%s",
-        conv_info["name"], conv_output.shape,
+    # ── Create a temporary interpreter that keeps all tensors ──
+    tmp = Interpreter(
+        model_path=tflite_path,
+        experimental_preserve_all_tensors=True,
     )
+    tmp.allocate_tensors()
 
-    # ── Get Dense weights ──
-    dense_weights = _find_dense_weights_tflite(interpreter, num_classes)
-    if dense_weights is None:
-        logger.warning("Dense weight matrix not found in TFLite model.")
-        return None
+    try:
+        # ── Run inference ──
+        input_info = tmp.get_input_details()[0]
+        image = img_array.copy()
+
+        if input_info["dtype"] == np.uint8:
+            scale, zero_point = input_info["quantization"]
+            image = (image / scale + zero_point).astype(np.uint8)
+        else:
+            image = image.astype(np.float32)
+
+        tmp.set_tensor(input_info["index"], image)
+        tmp.invoke()
+
+        # ── Get the last conv feature map ──
+        conv_info = _find_last_conv_tensor_tflite(tmp)
+        if conv_info is None:
+            logger.warning("No spatial feature-map tensor found in TFLite model.")
+            return None
+
+        conv_output = tmp.get_tensor(conv_info["index"])[0].copy()  # (H, W, C)
+        logger.info(
+            "TFLite CAM: tensor '%s' shape=%s",
+            conv_info["name"], conv_output.shape,
+        )
+
+        # ── Get Dense weights ──
+        dense_weights = _find_dense_weights_tflite(tmp, num_classes)
+        if dense_weights is None:
+            logger.warning("Dense weight matrix not found in TFLite model.")
+            return None
+        dense_weights = dense_weights.copy()
+
+    finally:
+        # ── Release the heavy interpreter immediately ──
+        del tmp
 
     # dense_weights: (C, num_classes) → class_weights: (C,)
     class_weights = dense_weights[:, predicted_idx]
@@ -312,7 +334,7 @@ def _compute_heatmap_tflite(
 
 def generate_gradcam(
     model_id: str,
-    cached_model: tf.keras.Model | tf.lite.Interpreter | None,
+    cached_model: Any,
     original_image: Image.Image,
     img_array: np.ndarray,
     predicted_idx: int,
@@ -320,8 +342,8 @@ def generate_gradcam(
     """
     Generate a Grad-CAM / CAM heatmap overlay and save it to ``GRADCAM_DIR``.
 
-    * Keras model  → true Grad-CAM (``GradientTape``).
-    * TFLite model → CAM (Dense weights × conv feature map).
+    * Keras model  → true Grad-CAM (``GradientTape``) – dev only.
+    * TFLite model → CAM (Dense weights × conv feature map) – prod safe.
 
     Parameters
     ----------
@@ -338,7 +360,7 @@ def generate_gradcam(
     try:
         heatmap: np.ndarray | None = None
 
-        if isinstance(cached_model, tf.keras.Model):
+        if _HAS_TF and isinstance(cached_model, tf.keras.Model):
             # ── Keras → true Grad-CAM ──
             conv_layer_name = _find_last_conv_layer_keras(cached_model)
             if conv_layer_name is None:
@@ -352,11 +374,17 @@ def generate_gradcam(
                 cached_model, img_array, predicted_idx, conv_layer_name,
             )
 
-        elif isinstance(cached_model, tf.lite.Interpreter):
-            # ── TFLite → CAM ──
+        elif isinstance(cached_model, Interpreter):
+            # ── TFLite → CAM (short-lived interpreter) ──
+            from src.app.services.model_service import get_tflite_path
+
+            tflite_path = get_tflite_path(model_id)
+            if tflite_path is None:
+                logger.warning("No .tflite path for model '%s'.", model_id)
+                return None
             logger.info("Generating CAM (TFLite) for model '%s' …", model_id)
             heatmap = _compute_heatmap_tflite(
-                cached_model, img_array, predicted_idx, len(CLASS_NAMES),
+                tflite_path, img_array, predicted_idx, len(CLASS_NAMES),
             )
 
         else:

@@ -1,0 +1,11 @@
+# Production dependencies – uses tflite-runtime (~5 MB) instead of
+# full tensorflow (~500 MB) to stay under tight memory limits.
+fastapi
+uvicorn[standard]
+tflite-runtime
+Pillow
+httpx
+numpy
+matplotlib
+python-multipart
+pydantic-settings
